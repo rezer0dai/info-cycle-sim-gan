@@ -33,7 +33,7 @@ from datasets import *
 
 from models import *
 from gan import GAN
-from ipmloss import IPMLoss
+from ipmloss import *
 from rollout import FakeRollout
 from utils import *
 
@@ -73,6 +73,19 @@ class CycleRollout(FakeRollout):
         self.random_cut = random.randint(batch_size // 4, batch_size - batch_size // 4 - 1)
         return self._sample_indices(batch_size)
 
+    def label_cuts(self):
+        self.cuts = []
+        labels = self.label[self.indices]
+        last = 0
+        for i in range(2):
+            for w in range(last+1, len(labels)):
+                if labels[w-1] != labels[w]:
+                    break
+            self.cuts.append( (last, w) )
+            idx = list(range(*self.cuts[-1]))
+            last = w
+        return self.cuts
+
 def main(opt, device, Tensor):
     img_shape = (opt.channels, opt.img_size, opt.img_size)
 
@@ -83,13 +96,25 @@ def main(opt, device, Tensor):
             transforms.ToTensor(),
             transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5)),
         ]
-
     dataloader = DataLoader(
             ImageDataset("%s" % opt.dataset_name, transforms_=transforms_, unaligned=True),
             batch_size=opt.batch_size,
             shuffle=True,
             num_workers=1,
         )
+
+    transforms_ = [
+            transforms.Resize(int(opt.img_size), Image.BICUBIC),
+            transforms.ToTensor(),
+            transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5)),
+        ]
+    sampler = DataLoader(
+        ImageDataset("%s" % opt.dataset_name, transforms_=transforms_, unaligned=True),
+        batch_size=opt.n_samples,
+        shuffle=True,
+        num_workers=1,
+    )
+
 
     print("DATALOADER LEN : ", len(dataloader), opt.batch_size, (opt.batch_size-1) * len(dataloader))
 
@@ -133,9 +158,11 @@ def main(opt, device, Tensor):
             return loss
         return cycle_callback
 
-    gan_loss = IPMLoss(
-            ragan=True, lsgan=True, importance_sampling=False,
-            competitive=False, torch_dtype=torch.float).to(device)
+    gan_loss = GANLoss(
+            forward=SimForwardLoss().to(device),
+            backward=SimBackwardLoss().to(device)
+#            backward=IPMBackwardLoss(lsgan=True, importance_sampling=False, competitive=False, torch_dtype=torch.float).to(device)
+            )
 
     gan = GAN(device,#"cuda:0",#
             gan_loss,
@@ -193,9 +220,14 @@ def main(opt, device, Tensor):
                 % (epoch, opt.n_epochs, i, len(dataloader), g_loss, l_loss, c_loss, i_loss)
             )
 
+
+            imgs = next(iter(sampler))
+            imgs_a = Tensor(imgs["A"])
+            imgs_b = Tensor(imgs["B"])
+
             # Sample noise, labels and code as generator input
             # Sample noise, labels and code as generator input
-            N_COLUMNS = 12
+            N_COLUMNS = opt.n_samples
             N_ROWS = 3
             to_torch = lambda data: Tensor(data)
             repre = lambda data: np.vstack([data]*N_ROWS)
@@ -210,15 +242,15 @@ def main(opt, device, Tensor):
                 ).view(len(label_data), -1)
 
             with torch.no_grad():
-                fakes_a = gan.gc.gen(imgs_a[:N_COLUMNS].repeat(N_ROWS, 1, 1, 1), space_data, Tensor(one_hot(np.ones(label_data.shape, dtype=np.int), opt.n_classes)), 0)
-                fakes_b = gan.gc.gen(imgs_b[:N_COLUMNS].repeat(N_ROWS, 1, 1, 1), space_data, Tensor(one_hot(np.zeros(label_data.shape, dtype=np.int), opt.n_classes)), 0)
+                fakes_a = gan.gc.gen(imgs_a.repeat(N_ROWS, 1, 1, 1), space_data, Tensor(one_hot(np.ones(label_data.shape, dtype=np.int), opt.n_classes)), 0)
+                fakes_b = gan.gc.gen(imgs_b.repeat(N_ROWS, 1, 1, 1), space_data, Tensor(one_hot(np.zeros(label_data.shape, dtype=np.int), opt.n_classes)), 0)
 
             out_shape = [len(space_data), opt.channels, opt.img_size, opt.img_size]
             img_x_shape = [N_COLUMNS, opt.channels, opt.img_size, opt.img_size]
             fakes = torch.cat([
-                imgs_a[:img_x_shape[0]].reshape(img_x_shape),
+                imgs_a.reshape(img_x_shape),
                 fakes_a.reshape(out_shape),
-                imgs_b[:img_x_shape[0]].reshape(img_x_shape),
+                imgs_b.reshape(img_x_shape),
                 fakes_b.reshape(out_shape)])
             save_image(fakes.data, "images_%s_%s/%d.png" % (opt.dataset_name, opt.postfix, batches_done // opt.sample_interval), nrow=N_COLUMNS, normalize=True)
 
@@ -254,6 +286,7 @@ if "__main__" == __name__:
     parser.add_argument("--sample_interval", type=int, default=10, help="interval betwen image samples")
 
     parser.add_argument("--postfix", type=str, default="", help="latent code")
+    parser.add_argument("--n_samples", type=int, default=12, help="samples to output for visuals")
 
     opt = parser.parse_args()
     print(opt)

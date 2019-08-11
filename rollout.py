@@ -37,3 +37,7 @@ class FakeRollout:
         return self._get_indices(size, batch_size)
     def _get_indices(self, size, batch_size):
         return random.sample(range(size), batch_size)
+
+    def label_cuts(self):
+        return [ (0, len(self.label)) ]
+

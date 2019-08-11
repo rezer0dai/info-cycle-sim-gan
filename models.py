@@ -151,8 +151,8 @@ class Discriminator(nn.Module):
 
 #        print(torch.softmax(out_labels, 1))
         return (
-                out_adv,
-                out_cls,
+                torch.sigmoid(out_adv),
+                torch.tanh(out_cls),
                 #  torch.softmax(out_labels, 1)
                 nn.Softmax(dim=1)(out_labels)
                 )
